@@ -15,13 +15,13 @@ interface MapProps {
   apiKey: string;
   onMapClick: (e: mapboxgl.MapMouseEvent) => void;
   locations: Location[];
-  initialCoords: [number, number] | null; // New prop for initial coordinates
+  initialCoords: [number, number] | null;
 }
 
 const Map = ({ apiKey, onMapClick, locations, initialCoords }: MapProps) => {
   const mapContainerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<mapboxgl.Map | null>(null);
-  const [markers, setMarkers] = useState<mapboxgl.Marker[]>([]);
+  const [markerMap, setMarkerMap] = useState<{ [key: number]: mapboxgl.Marker }>({});
   const [isMapInitialized, setIsMapInitialized] = useState(false);
 
   const defaultCoords = {
@@ -41,14 +41,13 @@ const Map = ({ apiKey, onMapClick, locations, initialCoords }: MapProps) => {
     try {
       mapboxgl.accessToken = apiKey;
 
-      // Use user's current location if available, otherwise default
       const center = initialCoords || [defaultCoords.lng, defaultCoords.lat];
 
       mapRef.current = new mapboxgl.Map({
         container: mapContainerRef.current,
         style: 'mapbox://styles/mapbox/streets-v11',
         center,
-        zoom: initialCoords ? 14 : defaultCoords.zoom, // Zoom closer if using current location
+        zoom: initialCoords ? 14 : defaultCoords.zoom,
       });
 
       mapRef.current.addControl(new mapboxgl.NavigationControl(), 'top-right');
@@ -76,27 +75,44 @@ const Map = ({ apiKey, onMapClick, locations, initialCoords }: MapProps) => {
         setIsMapInitialized(false);
       }
     };
-  }, [apiKey, initialCoords]); // Re-run if apiKey or initialCoords changes
+  }, [apiKey, initialCoords]);
 
-  // Update markers and handle current location
+  // Update markers
   const updateMarkers = useCallback(() => {
     if (!mapRef.current || !isMapInitialized) return;
 
-    // Remove existing markers
-    markers.forEach((marker) => marker.remove());
-    setMarkers([]);
+    // Create a new marker map for the current locations
+    const newMarkerMap: { [key: number]: mapboxgl.Marker } = {};
 
-    // Add new markers
-    const newMarkers = locations.map((location) => {
-      const marker = new mapboxgl.Marker({
-        color: location.type === 'current' ? 'blue' : 'red',
-      })
-        .setLngLat(location.coordinates)
-        .addTo(mapRef.current!);
-      return marker;
+    // Add or update markers for each location
+    locations.forEach((location) => {
+      // Reuse existing marker if it exists
+      let marker = markerMap[location.timestamp];
+
+      if (!marker) {
+        // Create new marker
+        marker = new mapboxgl.Marker({
+          color: location.type === 'current' ? 'blue' : 'red',
+        })
+          .setLngLat(location.coordinates)
+          .addTo(mapRef.current!);
+      } else {
+        // Update marker position (in case coordinates changed)
+        marker.setLngLat(location.coordinates);
+      }
+
+      newMarkerMap[location.timestamp] = marker;
     });
 
-    setMarkers(newMarkers);
+    // Remove markers that are no longer in the locations list
+    Object.keys(markerMap).forEach((timestamp) => {
+      if (!locations.some((loc) => loc.timestamp === Number(timestamp))) {
+        markerMap[Number(timestamp)].remove();
+      }
+    });
+
+    // Update the marker map state
+    setMarkerMap(newMarkerMap);
 
     // Center map on the latest current location, if any
     const currentLocation = locations.find((loc) => loc.type === 'current');
@@ -107,7 +123,7 @@ const Map = ({ apiKey, onMapClick, locations, initialCoords }: MapProps) => {
         essential: true,
       });
     }
-  }, [locations, isMapInitialized, markers]);
+  }, [locations, isMapInitialized, markerMap]);
 
   // Run marker updates when locations or map initialization changes
   useEffect(() => {
