@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import Map from '../components/Map';
 import { useToast } from '../hooks/use-toast';
 import { Button } from '../components/ui/button';
@@ -8,7 +8,7 @@ import mapboxgl from 'mapbox-gl';
 interface Location {
   coordinates: [number, number];
   address: string;
-  type: 'current' | 'selected';
+  type: 'current' | 'selected' | 'searched';
   timestamp: number;
 }
 
@@ -16,10 +16,14 @@ const Index = () => {
   const [locations, setLocations] = useState<Location[]>([]);
   const [mapboxToken, setMapboxToken] = useState<string>('');
   const [isTokenSet, setIsTokenSet] = useState(false);
-  const [initialCoords, setInitialCoords] = useState<[number, number] | null>(null); // Store initial user coordinates
+  const [initialCoords, setInitialCoords] = useState<[number, number] | null>(null);
+  const [searchQuery, setSearchQuery] = useState<string>('');
+  const [suggestions, setSuggestions] = useState<any[]>([]);
+  const [isSuggestionsOpen, setIsSuggestionsOpen] = useState(false);
   const { toast } = useToast();
+  const searchContainerRef = useRef<HTMLDivElement | null>(null);
 
-  // Function to handle map clicks
+  // Handle map clicks
   const handleMapClick = async (e: mapboxgl.MapMouseEvent) => {
     const clickedCoords: [number, number] = [e.lngLat.lng, e.lngLat.lat];
 
@@ -57,6 +61,7 @@ const Index = () => {
     }
   };
 
+  // Get current location
   const getCurrentLocation = () => {
     if (!mapboxToken || !isTokenSet) {
       toast({
@@ -122,6 +127,7 @@ const Index = () => {
     }
   };
 
+  // Handle token submission
   const handleTokenSubmit = () => {
     if (!mapboxToken.trim()) {
       toast({
@@ -132,7 +138,6 @@ const Index = () => {
       return;
     }
 
-    // Validate the token by making a test API call
     fetch(
       `https://api.mapbox.com/geocoding/v5/mapbox.places/0,0.json?access_token=${mapboxToken}`
     )
@@ -141,12 +146,11 @@ const Index = () => {
           throw new Error('Invalid Mapbox API token');
         }
 
-        // Fetch user's current location for initial map center
         if ('geolocation' in navigator) {
           navigator.geolocation.getCurrentPosition(
             (position) => {
               const { longitude, latitude } = position.coords;
-              setInitialCoords([longitude, latitude]); // Set initial coordinates
+              setInitialCoords([longitude, latitude]);
               setIsTokenSet(true);
               toast({
                 title: 'Token Set',
@@ -155,7 +159,7 @@ const Index = () => {
             },
             (error) => {
               console.error('Error getting initial location:', error);
-              setInitialCoords(null); // Fallback to default in Map component
+              setInitialCoords(null);
               setIsTokenSet(true);
               toast({
                 title: 'Token Set',
@@ -164,7 +168,7 @@ const Index = () => {
             }
           );
         } else {
-          setInitialCoords(null); // Fallback to default in Map component
+          setInitialCoords(null);
           setIsTokenSet(true);
           toast({
             title: 'Token Set',
@@ -182,9 +186,90 @@ const Index = () => {
       });
   };
 
+  // Remove location
   const removeLocation = (timestamp: number) => {
     setLocations((prev) => prev.filter((loc) => loc.timestamp !== timestamp));
   };
+
+  // Fetch address suggestions
+  useEffect(() => {
+    if (!mapboxToken || !isTokenSet || !searchQuery.trim()) {
+      setSuggestions([]);
+      return;
+    }
+
+    const fetchSuggestions = async () => {
+      try {
+        // Use proximity if initialCoords are available
+        const proximityParam = initialCoords
+          ? `&proximity=${initialCoords[0]},${initialCoords[1]}`
+          : '';
+        const response = await fetch(
+          `https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(
+            searchQuery
+          )}.json?access_token=${mapboxToken}&autocomplete=true&limit=5&types=address,poi${proximityParam}&country=IN`
+        );
+
+        if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+
+        const data = await response.json();
+        setSuggestions(data.features || []);
+        setIsSuggestionsOpen(true);
+      } catch (error) {
+        console.error('Error fetching suggestions:', error);
+        toast({
+          title: 'Error',
+          description: 'Could not fetch address suggestions',
+          variant: 'destructive',
+        });
+        setSuggestions([]);
+      }
+    };
+
+    // Debounce to avoid excessive API calls
+    const timeoutId = setTimeout(fetchSuggestions, 300);
+    return () => clearTimeout(timeoutId);
+  }, [searchQuery, mapboxToken, isTokenSet, initialCoords, toast]);
+
+  // Handle suggestion selection
+  const handleSuggestionSelect = (feature: any) => {
+    const coordinates: [number, number] = feature.geometry.coordinates;
+    const address = feature.place_name || 'Address not available';
+
+    setLocations((prev) => [
+      ...prev,
+      {
+        coordinates,
+        address,
+        type: 'searched',
+        timestamp: Date.now(),
+      },
+    ]);
+
+    setSearchQuery('');
+    setSuggestions([]);
+    setIsSuggestionsOpen(false);
+
+    toast({
+      title: 'Location added!',
+      description: 'Searched location has been added to the map',
+    });
+  };
+
+  // Close suggestions when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (
+        searchContainerRef.current &&
+        !searchContainerRef.current.contains(event.target as Node)
+      ) {
+        setIsSuggestionsOpen(false);
+      }
+    };
+
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
 
   return (
     <div className="min-h-screen p-8 bg-gray-50">
@@ -233,6 +318,28 @@ const Index = () => {
               <Navigation2 className="w-4 h-4" />
               Get Current Location
             </Button>
+            <div className="relative" ref={searchContainerRef}>
+              <input
+                type="text"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder="Search for a location..."
+                className="w-full px-4 py-2 border rounded-lg shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+              {isSuggestionsOpen && suggestions.length > 0 && (
+                <ul className="absolute z-10 w-full bg-white border rounded-lg shadow-lg mt-1 max-h-60 overflow-auto">
+                  {suggestions.map((feature) => (
+                    <li
+                      key={feature.id}
+                      className="px-4 py-2 hover:bg-gray-100 cursor-pointer"
+                      onClick={() => handleSuggestionSelect(feature)}
+                    >
+                      {feature.place_name}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
             <Map
               apiKey={mapboxToken}
               onMapClick={handleMapClick}
@@ -243,7 +350,7 @@ const Index = () => {
               <h2 className="text-xl font-semibold">Saved Locations</h2>
               {locations.length === 0 ? (
                 <p className="text-gray-500">
-                  No locations saved yet. Click on the map or get your current location.
+                  No locations saved yet. Click on the map, search, or get your current location.
                 </p>
               ) : (
                 <div className="space-y-3">
@@ -264,6 +371,8 @@ const Index = () => {
                           className={`p-2 rounded-full ${
                             location.type === 'current'
                               ? 'bg-blue-100 text-blue-600'
+                              : location.type === 'searched'
+                              ? 'bg-purple-100 text-purple-600'
                               : 'bg-green-100 text-green-600'
                           }`}
                         >
@@ -275,7 +384,11 @@ const Index = () => {
                         </div>
                         <div>
                           <h3 className="font-medium">
-                            {location.type === 'current' ? 'Current Location' : 'Selected Location'}
+                            {location.type === 'current'
+                              ? 'Current Location'
+                              : location.type === 'searched'
+                              ? 'Searched Location'
+                              : 'Selected Location'}
                           </h3>
                           <p className="text-gray-700">{location.address}</p>
                           <p className="text-sm text-gray-500 mt-1">

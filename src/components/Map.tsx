@@ -7,7 +7,7 @@ import 'mapbox-gl/dist/mapbox-gl.css';
 interface Location {
   coordinates: [number, number];
   address: string;
-  type: 'current' | 'selected';
+  type: 'current' | 'selected' | 'searched';
   timestamp: number;
 }
 
@@ -81,40 +81,37 @@ const Map = ({ apiKey, onMapClick, locations, initialCoords }: MapProps) => {
   const updateMarkers = useCallback(() => {
     if (!mapRef.current || !isMapInitialized) return;
 
-    // Create a new marker map for the current locations
     const newMarkerMap: { [key: number]: mapboxgl.Marker } = {};
 
-    // Add or update markers for each location
     locations.forEach((location) => {
-      // Reuse existing marker if it exists
       let marker = markerMap[location.timestamp];
 
       if (!marker) {
-        // Create new marker
         marker = new mapboxgl.Marker({
-          color: location.type === 'current' ? 'blue' : 'red',
+          color:
+            location.type === 'current'
+              ? 'blue'
+              : location.type === 'searched'
+              ? 'purple'
+              : 'red',
         })
           .setLngLat(location.coordinates)
           .addTo(mapRef.current!);
       } else {
-        // Update marker position (in case coordinates changed)
         marker.setLngLat(location.coordinates);
       }
 
       newMarkerMap[location.timestamp] = marker;
     });
 
-    // Remove markers that are no longer in the locations list
     Object.keys(markerMap).forEach((timestamp) => {
       if (!locations.some((loc) => loc.timestamp === Number(timestamp))) {
         markerMap[Number(timestamp)].remove();
       }
     });
 
-    // Update the marker map state
     setMarkerMap(newMarkerMap);
 
-    // Center map on the latest current location, if any
     const currentLocation = locations.find((loc) => loc.type === 'current');
     if (currentLocation) {
       mapRef.current?.flyTo({
